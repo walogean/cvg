@@ -34,6 +34,21 @@ TABLE = "converge_proyectos_financieros"
 MIN_YEAR = 1900
 MAX_YEAR = 2100
 
+SPANISH_MONTHS = {
+    "ene": 1,
+    "feb": 2,
+    "mar": 3,
+    "abr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "ago": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dic": 12,
+}
+
 DATE_COLS = [
     "periodo",
     "fecha_inicio_proyecto",
@@ -356,6 +371,42 @@ def drop_non_data_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def parse_periodo_series(series: pd.Series) -> pd.Series:
+    """Parse específico para 'periodo' con soporte de formatos tipo 'ene-26' y fechas estándar."""
+    s = series.astype("string").str.strip().str.lower()
+
+    # 1) Intento directo con parser de pandas (fechas estándar)
+    parsed = pd.to_datetime(s, errors="coerce", dayfirst=True)
+
+    # 2) Soporte para periodo mensual en español (ej: ene-26, ene/2026)
+    missing = parsed.isna() & s.notna() & (s != "")
+    if missing.any():
+        sub = s[missing]
+
+        pattern = re.compile(r"^(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[\-\/]?(\d{2}|\d{4})$")
+        built = []
+        idxs = []
+        for idx, val in sub.items():
+            m = pattern.fullmatch(str(val))
+            if not m:
+                continue
+            mon_txt, year_txt = m.group(1), m.group(2)
+            month = SPANISH_MONTHS[mon_txt]
+            year = int(year_txt)
+            if year < 100:
+                year += 2000
+            try:
+                built.append(pd.Timestamp(year=year, month=month, day=1))
+                idxs.append(idx)
+            except Exception:
+                pass
+
+        if idxs:
+            parsed.loc[idxs] = pd.Series(built, index=idxs)
+
+    return parsed
+
+
 def validate_and_transform(df_raw: pd.DataFrame) -> ValidationResult:
     """Valida campos por tipo y separa registros válidos e inválidos con detalle de errores."""
     df = df_raw.copy()
@@ -378,7 +429,11 @@ def validate_and_transform(df_raw: pd.DataFrame) -> ValidationResult:
     # Validación/transformación de fechas
     for col in DATE_COLS:
         original = df[col]
-        parsed = pd.to_datetime(original, errors="coerce", dayfirst=True)
+
+        if col == "periodo":
+            parsed = parse_periodo_series(original)
+        else:
+            parsed = pd.to_datetime(original, errors="coerce", dayfirst=True)
 
         # Error de parseo: formato inválido (ej. mes 54, día 99, texto no fecha)
         bad_parse = original.notna() & (original.astype(str).str.strip() != "") & parsed.isna()
@@ -592,6 +647,14 @@ def main() -> None:
     df_raw = drop_non_data_rows(df_raw)
 
     result = validate_and_transform(df_raw)
+
+    # Log de validación por columna para diagnóstico rápido
+    if not result.invalid_df.empty and "errores" in result.invalid_df.columns:
+        print("[DIAGNOSTICO] Top errores de validación:")
+        exploded = result.invalid_df["errores"].astype("string").str.split(", ").explode()
+        counts = exploded.value_counts(dropna=True).head(10)
+        for err, cnt in counts.items():
+            print(f"  - {err}: {cnt}")
 
     # Las columnas de auditoría no vienen en Excel: se rellenan con valores fijos para inserción
     valid_df = apply_fixed_audit_values(result.valid_df)
