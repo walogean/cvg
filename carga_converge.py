@@ -371,6 +371,28 @@ def drop_non_data_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def parse_excel_serial_dates(series: pd.Series, existing: pd.Series | None = None) -> pd.Series:
+    """Intenta parsear seriales de fecha Excel (ej. 46958) sobre valores no parseados aún."""
+    s = series.astype("string").str.strip()
+    parsed = existing.copy() if existing is not None else pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+
+    missing = parsed.isna() & s.notna() & (s != "")
+    if not missing.any():
+        return parsed
+
+    numeric_candidate = pd.to_numeric(s[missing], errors="coerce")
+
+    # Rango razonable para serial Excel (aprox entre 1900 y 2100)
+    # 1 -> 1899-12-31, 73050 ~ 2100-01-01
+    serial_mask = numeric_candidate.notna() & (numeric_candidate >= 1) & (numeric_candidate <= 73050)
+    if serial_mask.any():
+        serial_vals = numeric_candidate[serial_mask]
+        parsed_serial = pd.to_datetime(serial_vals, unit="D", origin="1899-12-30", errors="coerce")
+        parsed.loc[parsed_serial.index] = parsed_serial
+
+    return parsed
+
+
 def parse_periodo_series(series: pd.Series) -> pd.Series:
     """Parse específico para 'periodo' con soporte de formatos tipo 'ene-26' y fechas estándar."""
     s = series.astype("string").str.strip().str.lower()
@@ -432,8 +454,10 @@ def validate_and_transform(df_raw: pd.DataFrame) -> ValidationResult:
 
         if col == "periodo":
             parsed = parse_periodo_series(original)
+            parsed = parse_excel_serial_dates(original, parsed)
         else:
             parsed = pd.to_datetime(original, errors="coerce", dayfirst=True)
+            parsed = parse_excel_serial_dates(original, parsed)
 
         # Error de parseo: formato inválido (ej. mes 54, día 99, texto no fecha)
         bad_parse = original.notna() & (original.astype(str).str.strip() != "") & parsed.isna()
