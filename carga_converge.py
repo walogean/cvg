@@ -36,8 +36,6 @@ DATE_COLS = [
     "periodo",
     "fecha_inicio_proyecto",
     "fecha_fin_proyecto",
-    "fecha_creacion",
-    "fecha_ult_modificacion",
 ]
 
 NUMERIC_COLS = [
@@ -75,6 +73,9 @@ NUMERIC_COLS = [
 ]
 
 BOOL_COLS = ["deleted_row"]
+
+# Valores fijos de auditoría para cargas masivas
+MASSIVE_IMPORT_USER = "Massive Import"
 
 # Columnas que se deben insertar (excluye id serial)
 INSERT_COLS = [
@@ -308,6 +309,18 @@ def validate_and_transform(df_raw: pd.DataFrame) -> ValidationResult:
     return ValidationResult(valid_df=valid_df, invalid_df=invalid_df)
 
 
+def apply_fixed_audit_values(df: pd.DataFrame) -> pd.DataFrame:
+    """Asigna valores fijos de auditoría para columnas que no llegan desde Excel."""
+    df = df.copy()
+    today = datetime.now().date()
+    df["fecha_creacion"] = today
+    df["fecha_ult_modificacion"] = today
+    df["creador"] = MASSIVE_IMPORT_USER
+    df["ult_modificador"] = MASSIVE_IMPORT_USER
+    df["deleted_row"] = False
+    return df
+
+
 def insert_valid_rows(df: pd.DataFrame, conn_params: Dict[str, str], batch_size: int = 1000) -> int:
     """Inserta en bloque los registros válidos en PostgreSQL y devuelve cuántos se insertaron."""
     if df.empty:
@@ -366,8 +379,11 @@ def main() -> None:
 
     result = validate_and_transform(df_raw)
 
+    # Las columnas de auditoría no vienen en Excel: se rellenan con valores fijos para inserción
+    valid_df = apply_fixed_audit_values(result.valid_df)
+
     invalid_path = export_invalid(result.invalid_df, output_dir)
-    inserted = insert_valid_rows(result.valid_df, conn_params)
+    inserted = insert_valid_rows(valid_df, conn_params)
 
     print("[RESUMEN]")
     print(f"- Filas leídas: {len(df_raw)}")

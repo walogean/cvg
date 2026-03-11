@@ -16,6 +16,12 @@ Proceso en Python para cargar datos desde Excel a la tabla:
    - booleano (`deleted_row`)
 5. Separa datos inválidos para reporte.
 6. Inserta los válidos en PostgreSQL.
+7. Asigna valores fijos en auditoría (no vienen en Excel):
+   - `fecha_creacion` = fecha actual
+   - `fecha_ult_modificacion` = fecha actual
+   - `creador` = `Massive Import`
+   - `ult_modificador` = `Massive Import`
+   - `deleted_row` = `False`
 
 ## Estructura
 
