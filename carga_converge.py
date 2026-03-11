@@ -32,7 +32,6 @@ MIN_YEAR = 1900
 MAX_YEAR = 2100
 
 DATE_COLS = [
-    "fecha_carga",
     "periodo",
     "fecha_inicio_proyecto",
     "fecha_fin_proyecto",
@@ -159,8 +158,9 @@ INSERT_COLS = [
     "deleted_row",
 ]
 
-# Columnas de auditoría con valores fijos (no vienen del Excel)
-AUDIT_FIXED_COLS = [
+# Columnas con valores fijos (no vienen del Excel)
+FIXED_COLS = [
+    "fecha_carga",
     "fecha_creacion",
     "fecha_ult_modificacion",
     "creador",
@@ -169,7 +169,7 @@ AUDIT_FIXED_COLS = [
 ]
 
 # Columnas esperadas desde el Excel
-EXCEL_COLS = [col for col in INSERT_COLS if col not in AUDIT_FIXED_COLS]
+EXCEL_COLS = [col for col in INSERT_COLS if col not in FIXED_COLS]
 
 # No se validan booleanos desde Excel porque deleted_row se fija en el proceso
 BOOL_COLS: List[str] = []
@@ -239,8 +239,8 @@ def validate_and_transform(df_raw: pd.DataFrame) -> ValidationResult:
     # Ignorar columnas extra del Excel y trabajar solo con columnas de entrada esperadas
     df = df[EXCEL_COLS].copy()
 
-    # Completa columnas de auditoría para mantener el mismo esquema interno de INSERT_COLS
-    for col in AUDIT_FIXED_COLS:
+    # Completa columnas fijas para mantener el mismo esquema interno de INSERT_COLS
+    for col in FIXED_COLS:
         if col not in df.columns:
             df[col] = pd.NA
 
@@ -328,9 +328,11 @@ def validate_and_transform(df_raw: pd.DataFrame) -> ValidationResult:
 
 
 def apply_fixed_audit_values(df: pd.DataFrame) -> pd.DataFrame:
-    """Asigna valores fijos de auditoría para columnas que no llegan desde Excel."""
+    """Asigna valores fijos para columnas que no llegan desde Excel."""
     df = df.copy()
-    today = datetime.now().date()
+    now_ts = datetime.now()
+    today = now_ts.date()
+    df["fecha_carga"] = now_ts
     df["fecha_creacion"] = today
     df["fecha_ult_modificacion"] = today
     df["creador"] = MASSIVE_IMPORT_USER

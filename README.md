@@ -14,10 +14,10 @@ Proceso en Python para cargar datos desde Excel a la tabla:
    - fechas (`date`) con control de parseo y rango de año (1900-2100)
    - validación cruzada: `fecha_inicio_proyecto` <= `fecha_fin_proyecto`
    - numéricos (`numeric`)
-   - booleano (`deleted_row`)
 5. Separa datos inválidos para reporte.
 6. Inserta los válidos en PostgreSQL.
-7. Asigna valores fijos en auditoría (no vienen en Excel):
+7. Asigna valores fijos en columnas no presentes en Excel:
+   - `fecha_carga` = timestamp actual (`datetime.now()`)
    - `fecha_creacion` = fecha actual
    - `fecha_ult_modificacion` = fecha actual
    - `creador` = `Massive Import`
