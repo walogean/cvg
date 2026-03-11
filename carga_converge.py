@@ -72,8 +72,6 @@ NUMERIC_COLS = [
     "existencias",
 ]
 
-BOOL_COLS = ["deleted_row"]
-
 # Valores fijos de auditoría para cargas masivas
 MASSIVE_IMPORT_USER = "Massive Import"
 
@@ -161,6 +159,21 @@ INSERT_COLS = [
     "deleted_row",
 ]
 
+# Columnas de auditoría con valores fijos (no vienen del Excel)
+AUDIT_FIXED_COLS = [
+    "fecha_creacion",
+    "fecha_ult_modificacion",
+    "creador",
+    "ult_modificador",
+    "deleted_row",
+]
+
+# Columnas esperadas desde el Excel
+EXCEL_COLS = [col for col in INSERT_COLS if col not in AUDIT_FIXED_COLS]
+
+# No se validan booleanos desde Excel porque deleted_row se fija en el proceso
+BOOL_COLS: List[str] = []
+
 
 @dataclass
 class ValidationResult:
@@ -218,13 +231,18 @@ def validate_and_transform(df_raw: pd.DataFrame) -> ValidationResult:
     """Valida campos por tipo y separa registros válidos e inválidos con detalle de errores."""
     df = df_raw.copy()
 
-    # Garantiza presencia de columnas esperadas (faltantes se añaden como nulas)
-    for col in INSERT_COLS:
+    # Garantiza presencia de columnas esperadas desde Excel (faltantes se añaden como nulas)
+    for col in EXCEL_COLS:
         if col not in df.columns:
             df[col] = pd.NA
 
-    # Ignorar columnas extra del Excel
-    df = df[INSERT_COLS].copy()
+    # Ignorar columnas extra del Excel y trabajar solo con columnas de entrada esperadas
+    df = df[EXCEL_COLS].copy()
+
+    # Completa columnas de auditoría para mantener el mismo esquema interno de INSERT_COLS
+    for col in AUDIT_FIXED_COLS:
+        if col not in df.columns:
+            df[col] = pd.NA
 
     errors: List[pd.Series] = []
 
