@@ -44,7 +44,7 @@ pip install pandas openpyxl psycopg2-binary
 
 ## Configuración de BD (.ini)
 
-Ejemplo de fichero `db.ini`:
+Ejemplo de fichero `db.ini` (también disponible como `db.example.ini` en el repo):
 
 ```ini
 [postgres]
