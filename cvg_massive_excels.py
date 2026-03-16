@@ -1133,17 +1133,31 @@ def main() -> None:
     )
     parser.add_argument(
         "--log-file",
-        help="Ruta de log para duplicar salida de consola a archivo",
+        help="Nombre/ruta de log. Si se omite, se genera en ./logs automáticamente",
     )
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
     config_path = Path(args.config_path) if args.config_path else (script_dir / "config.ini")
 
-    log_file = Path(args.log_file) if args.log_file else None
-    if log_file and not log_file.is_absolute():
-        log_file = (script_dir / log_file).resolve()
+    logs_dir = (script_dir / "logs").resolve()
+    ts_run = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if args.log_file:
+        raw_log = Path(args.log_file)
+        if raw_log.is_absolute():
+            log_file = raw_log
+        elif raw_log.parent == Path("."):
+            # Si sólo viene nombre de archivo, forzar carpeta ./logs
+            log_file = (logs_dir / raw_log.name).resolve()
+        else:
+            # Si viene ruta relativa con carpeta, respetarla relativa al script
+            log_file = (script_dir / raw_log).resolve()
+    else:
+        log_file = logs_dir / f"run_{ts_run}.log"
+
     setup_logging(log_file)
+    print(f"[LOG] Guardando ejecución en: {log_file}")
 
     cfg = load_config(config_path)
 

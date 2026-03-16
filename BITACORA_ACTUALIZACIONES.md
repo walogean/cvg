@@ -80,7 +80,10 @@ Se incorporó flujo explícito para columnas insertables que existen en tabla pe
 
 ### 6) Logging a archivo
 **Archivo:** `cvg_massive_excels.py`
-- Nuevo flag: `--log-file <ruta>`
+- Flag opcional: `--log-file <nombre_o_ruta>`
+- Si no se indica, se genera log automático en `./logs/run_<timestamp>.log`.
+- Si `./logs` no existe, se crea automáticamente.
+- Si `--log-file` trae solo nombre (sin carpeta), se guarda en `./logs/<nombre>`.
 - Duplica `stdout/stderr` a archivo (formato simple con marca de inicio de ejecución).
 
 ### 7) Modo no interactivo completo
