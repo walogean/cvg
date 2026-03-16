@@ -1,5 +1,39 @@
 # cvg
 
+## Nueva versión genérica (escalable): `cvg_massive_excels.py`
+
+Se añadió una versión nueva y reutilizable para cualquier tabla destino de PostgreSQL, usando `config.ini` en la misma carpeta del script.
+
+### Características
+
+- Lee metadata real de la tabla (`information_schema.columns`) y valida por tipo.
+- Mapea automáticamente cabeceras de Excel a columnas destino (normalización robusta).
+- Permite mapeos manuales extra en sección `[column_map]`.
+- Soporta valores fijos configurables para columnas no presentes en Excel (`[fixed_values]`).
+- Exporta inválidos y realiza carga masiva por lotes con progreso.
+
+### Archivos nuevos
+
+- `cvg_massive_excels.py`: versión nueva genérica.
+- `config.example.ini`: ejemplo de configuración.
+
+### Ejecución (nueva versión)
+
+1. Copia `config.example.ini` a `config.ini` y rellena tus datos.
+2. Ejecuta:
+
+```bash
+python3 cvg_massive_excels.py
+```
+
+Opcional, especificando ruta de config:
+
+```bash
+python3 cvg_massive_excels.py --config-path "/ruta/config.ini"
+```
+
+---
+
 Proceso en Python para cargar datos desde Excel a la tabla:
 
 `proyecto_dashboard_defensa.converge_proyectos_financieros`
