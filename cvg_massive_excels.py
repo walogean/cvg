@@ -15,6 +15,7 @@ import configparser
 import difflib
 import math
 import re
+import shutil
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -716,6 +717,34 @@ def insert_valid_rows(
     return inserted
 
 
+def choose_load_mode(input_dir: Path, retry_input_dir: Path) -> Path:
+    """Pregunta si la carga es inicial o reintento y devuelve carpeta fuente."""
+    print("\n[SELECCION] Tipo de carga")
+    print("  1. Primer insert (usa input_dir)")
+    print("  2. Reintento de inserts (usa retry_input_dir)")
+
+    while True:
+        raw = input("Selecciona una opción (1-2): ").strip()
+        if raw == "1":
+            return input_dir
+        if raw == "2":
+            return retry_input_dir
+        print("Selección inválida, intenta de nuevo.")
+
+
+def copy_invalid_to_retry(invalid_path: Path | None, retry_input_dir: Path) -> Path | None:
+    """Copia reporte de inválidos a carpeta de reintentos para corrección y recarga puntual."""
+    if not invalid_path:
+        return None
+    retry_input_dir.mkdir(parents=True, exist_ok=True)
+    destination = retry_input_dir / invalid_path.name
+    if destination.exists():
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        destination = retry_input_dir / f"{invalid_path.stem}_{ts}{invalid_path.suffix}"
+    shutil.copy2(invalid_path, destination)
+    return destination
+
+
 def export_invalid(invalid_df: pd.DataFrame, output_dir: Path) -> Path | None:
     if invalid_df.empty:
         return None
@@ -731,6 +760,7 @@ def mark_excel_as_processed(
     mode: str,
     done_dir: Path,
     loaded_suffix: str = "_LOADED",
+    status_suffix: str | None = None,
 ) -> Path | None:
     """Marca el Excel procesado moviéndolo a carpeta done o renombrándolo."""
     mode = (mode or "none").strip().lower()
@@ -748,7 +778,8 @@ def mark_excel_as_processed(
         return destination
 
     if mode == "rename":
-        destination = excel_path.with_name(f"{excel_path.stem}{loaded_suffix}{excel_path.suffix}")
+        suffix = f"{loaded_suffix}{status_suffix or ''}"
+        destination = excel_path.with_name(f"{excel_path.stem}{suffix}{excel_path.suffix}")
         if destination.exists():
             destination = excel_path.with_name(f"{excel_path.stem}{loaded_suffix}_{ts}{excel_path.suffix}")
         excel_path.replace(destination)
@@ -805,6 +836,8 @@ def main() -> None:
         print(f"[SELECCION] Usando destino desde [{target_section}]: {schema}.{table}")
 
     input_dir = Path(cfg["input"].get("input_dir"))
+    retry_input_dir_cfg = cfg["input"].get("retry_input_dir", fallback="./inputs_retry")
+    retry_input_dir = (script_dir / retry_input_dir_cfg).resolve() if not Path(retry_input_dir_cfg).is_absolute() else Path(retry_input_dir_cfg)
     file_name = cfg["input"].get("file_name", fallback="").strip() or None
     sheet_name = cfg["input"].get("sheet_name", fallback="bbdd")
 
@@ -829,6 +862,13 @@ def main() -> None:
             "Crea la carpeta (por ejemplo ./inputs) o corrige [input].input_dir en config.ini."
         )
 
+    selected_input_dir = choose_load_mode(input_dir=input_dir, retry_input_dir=retry_input_dir)
+    if not selected_input_dir.exists() or not selected_input_dir.is_dir():
+        raise NotADirectoryError(
+            f"Carpeta seleccionada inválida: {selected_input_dir}. "
+            "Crea la carpeta o corrige [input].retry_input_dir en config.ini."
+        )
+
     metadata = get_table_metadata(conn_params, schema, table)
     insert_cols = get_insertable_columns(metadata)
 
@@ -838,7 +878,7 @@ def main() -> None:
     cfg_map = get_config_column_map(cfg)
     table_section = f"{schema}.{table}"
 
-    excel_file = pick_excel_file(input_dir, file_name)
+    excel_file = pick_excel_file(selected_input_dir, file_name)
     resolved_sheet_name = choose_sheet_name(excel_file, sheet_name)
     print(f"[INFO] Leyendo Excel: {excel_file} (hoja: {resolved_sheet_name})")
 
@@ -929,16 +969,26 @@ def main() -> None:
     if invalid_path:
         print(f"- Reporte inválidos: {invalid_path}")
 
-    # Marca archivo como procesado solo cuando no hay inválidos y la carga fue completa
-    if inserted == len(df_raw) and len(result.invalid_df) == 0:
+    # Si hubo inválidos, deja copia en carpeta de reintentos
+    if len(result.invalid_df) > 0:
+        retry_copy = copy_invalid_to_retry(invalid_path, retry_input_dir)
+        if retry_copy:
+            print(f"- Archivo para reintento generado en: {retry_copy}")
+
+    # Marca archivo como procesado también en cargas parciales, diferenciando estado
+    if inserted > 0:
+        partial = len(result.invalid_df) > 0
+        status_suffix = "_PARTIAL_ERROR" if partial else "_OK"
         processed_path = mark_excel_as_processed(
             excel_path=excel_file,
             mode=processed_mode,
             done_dir=processed_dir,
             loaded_suffix=loaded_suffix,
+            status_suffix=status_suffix,
         )
         if processed_path:
-            print(f"- Excel procesado marcado en: {processed_path}")
+            estado = "parcial con errores" if partial else "completa"
+            print(f"- Excel marcado como carga {estado}: {processed_path}")
 
 
 if __name__ == "__main__":

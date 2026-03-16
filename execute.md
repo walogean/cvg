@@ -34,10 +34,11 @@ python cvg_massive_excels.py
 
 Flujo:
 1. Pregunta si el import es para Defensa.
-2. Propone homologación de columnas Excel -> tabla.
-3. Si la hoja configurada existe, la usa.
-   Si el Excel tiene una sola hoja, la usa automáticamente.
-   Si tiene varias hojas y no coincide la configurada, pregunta cuál cargar.
+2. Pregunta si es primer insert o reintento (elige `input_dir` o `retry_input_dir`).
+3. Resuelve hoja a cargar:
+   - si existe `sheet_name`, la usa;
+   - si hay una sola hoja, la usa automáticamente;
+   - si hay varias y no coincide, pregunta cuál usar.
 4. Propone homologación de columnas Excel -> tabla.
 5. Exporta homologación a Excel y guarda/actualiza `mapping.ini`.
 6. Pide confirmación (`si/no/recargar`).
@@ -108,9 +109,12 @@ python cvg_massive_excels.py --auto-approve-mapping
 - `salidas/mapping_review_<schema>_<table>_<timestamp>.xlsx`
 - `salidas/registros_invalidos_<timestamp>.xlsx` (si existen inválidos)
 - `mapping.ini` (persistente por tabla)
-- Excel original marcado como procesado **solo si la carga fue completa sin inválidos**:
+- `inputs_retry/registros_invalidos_<timestamp>.xlsx` (copia para corrección y recarga puntual)
+- Excel original marcado como procesado cuando hubo inserción:
+  - `..._OK` si no hubo inválidos
+  - `..._PARTIAL_ERROR` si hubo inválidos
   - `processed_mode=move` -> mueve a `excels_done/`
-  - `processed_mode=rename` -> renombra con sufijo `_LOADED`
+  - `processed_mode=rename` -> renombra en origen
 
 ---
 
