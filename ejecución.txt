@@ -1,0 +1,1 @@
+%runfile "C:/Users/aaviacava/OneDrive - Indra/Escritorio/DevOps - Tickets/DevOps/1870 - Defensa/cvg/carga_converge.py" --args "--input-dir \"C:/Users/aaviacava/OneDrive - Indra/Escritorio/DevOps - Tickets/DevOps/1870 - Defensa\" --ini-path \"C:/Users/aaviacava/OneDrive - Indra/Escritorio/DevOps - Tickets/DevOps/1870 - Defensa/cvg/db.ini\""
