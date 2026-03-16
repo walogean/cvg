@@ -127,6 +127,17 @@ def pick_excel_file(input_dir: Path, file_name: str | None = None) -> Path:
     return candidates[0]
 
 
+def ask_yes_no(question: str) -> bool:
+    """Pregunta sí/no por consola y retorna booleano."""
+    while True:
+        ans = input(f"{question} [si/no]: ").strip().lower()
+        if ans in {"si", "s", "yes", "y"}:
+            return True
+        if ans in {"no", "n"}:
+            return False
+        print("Respuesta no válida. Usa: si / no")
+
+
 def fetch_available_schemas(conn_params: Dict[str, str]) -> List[str]:
     """Obtiene schemas de usuario visibles en la base de datos."""
     sql = """
@@ -697,15 +708,26 @@ def main() -> None:
     cfg = load_config(config_path)
 
     conn_params = get_db_params(cfg)
-    schema = cfg["target"].get("schema")
-    table = cfg["target"].get("table")
 
+    # Selección de destino por contexto de negocio
+    # - si --interactive-target: selección libre de schema/tabla desde BD
+    # - si no: pregunta si la carga es de defensa (usa [target_defensa]) o estándar (usa [target])
     if args.interactive_target:
         schemas = fetch_available_schemas(conn_params)
         schema = prompt_choice("Schema destino", schemas)
         tables = fetch_tables_in_schema(conn_params, schema)
         table = prompt_choice(f"Tabla destino en schema '{schema}'", tables)
         print(f"[SELECCION] Usando destino: {schema}.{table}")
+    else:
+        if "target_defensa" in cfg:
+            is_defensa = ask_yes_no("¿El import masivo es para Defensa?")
+            target_section = "target_defensa" if is_defensa else "target"
+        else:
+            target_section = "target"
+
+        schema = cfg[target_section].get("schema")
+        table = cfg[target_section].get("table")
+        print(f"[SELECCION] Usando destino desde [{target_section}]: {schema}.{table}")
 
     input_dir = Path(cfg["input"].get("input_dir"))
     file_name = cfg["input"].get("file_name", fallback="").strip() or None

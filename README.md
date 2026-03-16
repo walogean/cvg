@@ -28,6 +28,10 @@ Se añadió una versión nueva y reutilizable para cualquier tabla destino de Po
 python3 cvg_massive_excels.py
 ```
 
+Por defecto preguntará en consola:
+- si la carga es para Defensa (`[target_defensa]`) o
+- carga estándar (`[target]`).
+
 En modo interactivo, el script mostrará la homologación propuesta y esperará:
 - `si` -> continúa y carga.
 - `no` -> detiene la carga.
@@ -45,7 +49,7 @@ Opcional sin interacción (aprobación automática):
 python3 cvg_massive_excels.py --auto-approve-mapping
 ```
 
-Opcional elegir schema/tabla en consola (en vez de usar [target]):
+Opcional elegir schema/tabla en consola (anula `target` y `target_defensa`):
 
 ```bash
 python3 cvg_massive_excels.py --interactive-target
