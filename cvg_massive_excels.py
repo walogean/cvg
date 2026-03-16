@@ -26,6 +26,7 @@ from typing import Any, Dict, List
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
+from openpyxl import load_workbook
 
 SPANISH_MONTHS = {
     "ene": 1,
@@ -70,6 +71,7 @@ class ColumnMeta:
 class ValidationResult:
     valid_df: pd.DataFrame
     invalid_df: pd.DataFrame
+    error_messages: pd.Series
 
 
 def canonicalize_header(header: str) -> str:
@@ -132,12 +134,12 @@ def pick_excel_file(input_dir: Path, file_name: str | None = None) -> Path:
 def ask_yes_no(question: str) -> bool:
     """Pregunta sí/no por consola y retorna booleano."""
     while True:
-        ans = input(f"{question} [si/no]: ").strip().lower()
+        ans = input(f"{question} [s/n] (s=si, n=no): ").strip().lower()
         if ans in {"si", "s", "yes", "y"}:
             return True
         if ans in {"no", "n"}:
             return False
-        print("Respuesta no válida. Usa: si / no")
+        print("Respuesta no válida. Usa: s (si) / n (no)")
 
 
 def fetch_available_schemas(conn_params: Dict[str, str]) -> List[str]:
@@ -227,6 +229,15 @@ def read_excel_with_sheet(excel_path: Path, sheet_name: str) -> pd.DataFrame:
                 "Corrige [input].sheet_name en config.ini y vuelve a ejecutar."
             ) from e
         raise
+
+
+def drop_control_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Elimina columnas de control/no insertables del excel (por ejemplo, 'errores')."""
+    control_cols = {"errores"}
+    drop_cols = [c for c in df.columns if str(c).strip().lower() in control_cols]
+    if not drop_cols:
+        return df
+    return df.drop(columns=drop_cols)
 
 
 def get_table_metadata(conn_params: Dict[str, str], schema: str, table: str) -> List[ColumnMeta]:
@@ -419,14 +430,14 @@ def confirm_mapping(mapping_df: pd.DataFrame, mapping_path: Path, review_path: P
     print(f"[HOMOLOGACION] reporte excel: {review_path}")
 
     while True:
-        ans = input("¿El mapeo es correcto? [si/no/recargar]: ").strip().lower()
+        ans = input("¿El mapeo es correcto? [s/n/r] (s=si, n=no, r=recargar): ").strip().lower()
         if ans in {"si", "s", "yes", "y"}:
             return "yes"
         if ans in {"no", "n"}:
             return "no"
         if ans in {"recargar", "r", "reload"}:
             return "reload"
-        print("Respuesta no válida. Usa: si / no / recargar")
+        print("Respuesta no válida. Usa: s (si) / n (no) / r (recargar)")
 
 
 def clean_text_values(df: pd.DataFrame) -> pd.DataFrame:
@@ -621,15 +632,129 @@ def validate_and_transform(
     error_df = pd.concat(errors, axis=1) if errors else pd.DataFrame(index=df.index)
     row_has_error = error_df.any(axis=1) if not error_df.empty else pd.Series(False, index=df.index)
 
+    error_messages = pd.Series("", index=df.index, dtype="string")
+
     invalid_df = df_raw.loc[row_has_error].copy()
     if not error_df.empty:
-        invalid_df["errores"] = error_df.loc[row_has_error].apply(
+        invalid_msgs = error_df.loc[row_has_error].apply(
             lambda row: ", ".join([c.replace("error_", "") for c, v in row.items() if bool(v)]),
             axis=1,
         )
+        invalid_df["errores"] = invalid_msgs
+        error_messages.loc[invalid_msgs.index] = invalid_msgs.astype("string")
 
     valid_df = df.loc[~row_has_error].copy()
-    return ValidationResult(valid_df=valid_df, invalid_df=invalid_df)
+    return ValidationResult(valid_df=valid_df, invalid_df=invalid_df, error_messages=error_messages)
+
+
+def parse_column_default_literal(default_expr: str | None) -> tuple[bool, Any]:
+    """Intenta convertir default SQL simple a valor Python literal.
+
+    Retorna (es_literal, valor). Si no puede interpretar el default, es_literal=False.
+    """
+    if default_expr is None:
+        return False, None
+
+    expr = str(default_expr).strip()
+    if not expr:
+        return False, None
+
+    # Quita cast típico de PostgreSQL: 'x'::tipo
+    expr_no_cast = re.sub(r"::[a-zA-Z0-9_\s\[\]\.\"]+$", "", expr).strip()
+    low = expr_no_cast.lower()
+
+    if low in {"true", "false"}:
+        return True, low == "true"
+
+    if re.fullmatch(r"[-+]?\d+", expr_no_cast):
+        try:
+            return True, int(expr_no_cast)
+        except Exception:
+            pass
+
+    if re.fullmatch(r"[-+]?\d*\.\d+", expr_no_cast):
+        try:
+            return True, float(expr_no_cast)
+        except Exception:
+            pass
+
+    # Literal de texto entre comillas simples
+    m_text = re.fullmatch(r"'((?:''|[^'])*)'", expr_no_cast)
+    if m_text:
+        return True, m_text.group(1).replace("''", "'")
+
+    return False, None
+
+
+def collect_missing_input_columns(
+    df: pd.DataFrame,
+    metadata: List[ColumnMeta],
+    insert_cols: List[str],
+    fixed_cols: List[str],
+) -> List[Dict[str, Any]]:
+    """Detecta columnas insertables ausentes en Excel y su plan de relleno (default/null)."""
+    present = set(df.columns)
+    meta_map = {m.name: m for m in metadata}
+    missing = [c for c in insert_cols if c not in fixed_cols and c not in present]
+
+    out: List[Dict[str, Any]] = []
+    for col in missing:
+        meta = meta_map.get(col)
+        default_expr = meta.column_default if meta else None
+        has_literal_default, default_value = parse_column_default_literal(default_expr)
+        out.append(
+            {
+                "column": col,
+                "default_expr": default_expr,
+                "has_literal_default": has_literal_default,
+                "default_value": default_value,
+            }
+        )
+    return out
+
+
+def confirm_missing_columns_plan(missing_plan: List[Dict[str, Any]]) -> bool:
+    """Muestra columnas faltantes y pide confirmación para continuar con default/null."""
+    if not missing_plan:
+        return True
+
+    print("\n[VALIDACION] Columnas de tabla faltantes en Excel")
+    for item in missing_plan:
+        col = item["column"]
+        default_expr = item["default_expr"]
+        has_default = item["has_literal_default"]
+        if has_default:
+            print(f"  - {col}: se cargará con DEFAULT literal ({default_expr})")
+        elif default_expr:
+            print(f"  - {col}: DEFAULT no literal ({default_expr}) -> se enviará NULL")
+        else:
+            print(f"  - {col}: sin DEFAULT -> se enviará NULL")
+
+    while True:
+        ans = input(
+            "¿Continuar con columnas faltantes usando DEFAULT/NULL? [s/n] "
+            "(s=aceptar, n=editar excel): "
+        ).strip().lower()
+        if ans in {"s", "si", "yes", "y"}:
+            return True
+        if ans in {"n", "no"}:
+            return False
+        print("Respuesta no válida. Usa: s (aceptar) / n (editar excel)")
+
+
+def apply_missing_columns_plan(df: pd.DataFrame, missing_plan: List[Dict[str, Any]]) -> pd.DataFrame:
+    """Añade columnas faltantes al DataFrame con default literal o NULL."""
+    if not missing_plan:
+        return df
+
+    out = df.copy()
+    for item in missing_plan:
+        col = item["column"]
+        if item["has_literal_default"]:
+            out[col] = item["default_value"]
+        else:
+            out[col] = pd.NA
+    return out
 
 
 def parse_fixed_value(token: str) -> Any:
@@ -853,6 +978,57 @@ def export_invalid(invalid_df: pd.DataFrame, output_dir: Path) -> Path | None:
     return out
 
 
+def annotate_source_excel_errors(excel_path: Path, sheet_name: str, error_messages: pd.Series) -> bool:
+    """Escribe/actualiza columna 'errores' en el excel fuente usando índices de filas (0-based del DataFrame)."""
+    if error_messages.empty:
+        return False
+
+    if excel_path.suffix.lower() != ".xlsx":
+        print("[INFO] No se puede anotar columna 'errores' en .xls. Se omite actualización del excel fuente.")
+        return False
+
+    try:
+        wb = load_workbook(excel_path)
+        if sheet_name not in wb.sheetnames:
+            wb.close()
+            print(f"[INFO] Hoja '{sheet_name}' no encontrada para anotar errores en {excel_path.name}.")
+            return False
+
+        ws = wb[sheet_name]
+
+        last_col = ws.max_column
+        error_col = None
+        for col in range(1, last_col + 1):
+            val = ws.cell(row=1, column=col).value
+            if str(val).strip().lower() == "errores":
+                error_col = col
+                break
+
+        if error_col is None:
+            error_col = last_col + 1
+            ws.cell(row=1, column=error_col, value="errores")
+
+        # Limpia valores previos y escribe sólo para filas con error
+        max_row = ws.max_row
+        for r in range(2, max_row + 1):
+            ws.cell(row=r, column=error_col, value=None)
+
+        for idx, msg in error_messages.dropna().items():
+            txt = str(msg).strip()
+            if not txt:
+                continue
+            excel_row = int(idx) + 2  # +1 por base 1 +1 por cabecera
+            if excel_row <= max_row:
+                ws.cell(row=excel_row, column=error_col, value=txt)
+
+        wb.save(excel_path)
+        wb.close()
+        return True
+    except Exception as e:
+        print(f"[INFO] No se pudo anotar errores en excel fuente: {e}")
+        return False
+
+
 def mark_excel_as_processed(
     excel_path: Path,
     mode: str,
@@ -987,6 +1163,7 @@ def main() -> None:
     print(f"[INFO] Leyendo Excel: {excel_file} (hoja: {resolved_sheet_name})")
 
     df_raw = read_excel_with_sheet(excel_file, resolved_sheet_name)
+    df_raw = drop_control_columns(df_raw)
 
     # 1) Proponer homologación
     stored_map = get_stored_table_map(load_mapping_store(mapping_path), table_section)
@@ -1049,6 +1226,19 @@ def main() -> None:
     excel_input_cols = [c for c in insert_cols if c not in fixed_cols]
     df_raw = drop_fully_empty_rows(df_raw, [c for c in excel_input_cols if c in df_raw.columns])
 
+    # Detectar columnas de tabla no presentes en excel y decidir política default/null
+    missing_plan = collect_missing_input_columns(
+        df=df_raw,
+        metadata=metadata,
+        insert_cols=insert_cols,
+        fixed_cols=fixed_cols,
+    )
+    if missing_plan:
+        accepted_missing = confirm_missing_columns_plan(missing_plan)
+        if not accepted_missing:
+            print("[INFO] Carga detenida por usuario para ajustar columnas faltantes en el Excel.")
+            return
+
     result = validate_and_transform(
         df_raw=df_raw,
         metadata=metadata,
@@ -1065,9 +1255,18 @@ def main() -> None:
         for err, cnt in counts.items():
             print(f"  - {err}: {cnt}")
 
-    valid_df = apply_fixed_values(result.valid_df, cfg, insert_cols)
+    valid_df = apply_missing_columns_plan(result.valid_df, missing_plan)
+    valid_df = apply_fixed_values(valid_df, cfg, insert_cols)
 
     invalid_path = export_invalid(result.invalid_df, output_dir)
+
+    source_annotated = annotate_source_excel_errors(
+        excel_path=excel_file,
+        sheet_name=resolved_sheet_name,
+        error_messages=result.error_messages,
+    )
+    if source_annotated:
+        print("- Excel fuente actualizado con columna 'errores'.")
     inserted = insert_valid_rows(
         df=valid_df,
         conn_params=conn_params,
@@ -1084,6 +1283,8 @@ def main() -> None:
     print(f"- Filas inválidas: {len(result.invalid_df)}")
     if invalid_path:
         print(f"- Reporte inválidos: {invalid_path}")
+    if source_annotated:
+        print(f"- Columna 'errores' actualizada en fuente: {excel_file}")
 
     processed_path: Path | None = None
 
@@ -1093,8 +1294,8 @@ def main() -> None:
         if retry_copy:
             print(f"- Archivo para reintento generado en: {retry_copy}")
 
-    # Marca archivo como procesado también en cargas parciales, diferenciando estado
-    if inserted > 0:
+    # Carga inicial: marcar excel de cliente como procesado
+    if inserted > 0 and not is_retry_mode:
         partial = len(result.invalid_df) > 0
         status_suffix = "_PARTIAL_ERROR" if partial else "_OK"
         processed_path = mark_excel_as_processed(
@@ -1109,7 +1310,7 @@ def main() -> None:
             print(f"- Excel marcado como carga {estado}: {processed_path}")
 
         # Registrar pendiente de resolución cuando es carga parcial inicial
-        if (not is_retry_mode) and partial and retry_copy:
+        if partial and retry_copy:
             register_retry_entry(
                 index_path=retry_index_path,
                 retry_file=retry_copy,
@@ -1117,18 +1318,20 @@ def main() -> None:
                 invalid_report_path=invalid_path,
             )
 
+    # Reintento: no mover a excels_done; eliminar el excel de retry tras procesarlo
+    if is_retry_mode and inserted > 0:
+        safe_delete(excel_file)
+        print("- Excel de reintento procesado y eliminado de inputs_retry.")
+
     # Si es reintento y quedó completo sin inválidos: limpiar artefactos y actualizar estado a OK
     if is_retry_mode and inserted == len(df_raw) and len(result.invalid_df) == 0:
         entry = pop_retry_entry(retry_index_path, excel_file)
 
-        # 1) eliminar fichero de reintento consumido
-        safe_delete(excel_file)
-
-        # 2) eliminar reporte de inválidos histórico (si existe en índice)
+        # 1) eliminar reporte de inválidos histórico (si existe en índice)
         if entry and entry.get("invalid_report_path"):
             safe_delete(Path(entry["invalid_report_path"]))
 
-        # 3) renombrar original PARTIAL_ERROR a OK
+        # 2) renombrar original PARTIAL_ERROR a OK
         if entry and entry.get("original_processed_path"):
             updated = rename_partial_to_ok(Path(entry["original_processed_path"]))
             if updated:
