@@ -807,6 +807,16 @@ def choose_load_mode(input_dir: Path, retry_input_dir: Path) -> Path:
         print("Selección inválida, intenta de nuevo.")
 
 
+def should_skip_mapping_confirmation(mapping_df: pd.DataFrame) -> bool:
+    """Indica si se puede omitir confirmación: sin fuzzy/fallback/duplicados."""
+    if mapping_df.empty:
+        return False
+    allowed = {"mapping_ini", "config_map", "exact"}
+    methods_ok = mapping_df["metodo"].isin(allowed).all()
+    unique_ok = mapping_df["tabla_columna_propuesta"].astype("string").nunique() == len(mapping_df)
+    return bool(methods_ok and unique_ok)
+
+
 def copy_invalid_to_retry(invalid_path: Path | None, retry_input_dir: Path) -> Path | None:
     """Copia reporte de inválidos a carpeta de reintentos para corrección y recarga puntual."""
     if not invalid_path:
@@ -926,6 +936,9 @@ def main() -> None:
     loaded_suffix = cfg["output"].get("loaded_suffix", fallback="_LOADED")
     retry_index_file = cfg["output"].get("retry_index_file", fallback="retry_index.json")
     retry_index_path = (script_dir / retry_index_file).resolve() if not Path(retry_index_file).is_absolute() else Path(retry_index_file)
+    cleanup_mapping_review = cfg["output"].getboolean("cleanup_mapping_review", fallback=True)
+
+    auto_confirm_known_mapping = cfg["run"].getboolean("auto_confirm_known_mapping", fallback=True)
 
     batch_size = cfg["run"].getint("batch_size", fallback=1000)
     progress_every = cfg["run"].getint("progress_every", fallback=10000)
@@ -977,9 +990,14 @@ def main() -> None:
     save_mapping_ini(mapping_path, table_section, mapping_df)
 
     # 3) Confirmar homologación antes de cargar
-    if args.auto_approve_mapping:
+    skip_confirm = auto_confirm_known_mapping and should_skip_mapping_confirmation(mapping_df)
+
+    if args.auto_approve_mapping or skip_confirm:
         decision = "yes"
-        print("[HOMOLOGACION] Auto-aprobada por --auto-approve-mapping")
+        if args.auto_approve_mapping:
+            print("[HOMOLOGACION] Auto-aprobada por --auto-approve-mapping")
+        else:
+            print("[HOMOLOGACION] Auto-aprobada por mapeo conocido (mapping.ini/config exacto)")
     else:
         decision = confirm_mapping(mapping_df, mapping_path, review_path)
         while decision == "reload":
@@ -1000,9 +1018,16 @@ def main() -> None:
         print("[INFO] Carga detenida por usuario. Ajusta mapping.ini y ejecuta de nuevo.")
         return
 
+    # Si el mapeo quedó aprobado y solo era revisión, limpiar y salir
     if args.only_mapping:
+        if cleanup_mapping_review:
+            safe_delete(review_path)
         print("[INFO] Modo --only-mapping: homologación confirmada. No se insertaron datos.")
         return
+
+    # Limpieza opcional del reporte de homologación tras aprobación
+    if cleanup_mapping_review:
+        safe_delete(review_path)
 
     # 4) Aplicar homologación aprobada y continuar proceso
     df_raw = apply_mapping_to_dataframe(df_raw, mapping_df)
