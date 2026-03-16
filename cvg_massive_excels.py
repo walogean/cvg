@@ -630,6 +630,11 @@ def main() -> None:
         action="store_true",
         help="Aprueba mapeo automáticamente sin interacción",
     )
+    parser.add_argument(
+        "--only-mapping",
+        action="store_true",
+        help="Genera/valida homologación y sale sin insertar datos",
+    )
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
@@ -708,6 +713,10 @@ def main() -> None:
 
     if decision == "no":
         print("[INFO] Carga detenida por usuario. Ajusta mapping.ini y ejecuta de nuevo.")
+        return
+
+    if args.only_mapping:
+        print("[INFO] Modo --only-mapping: homologación confirmada. No se insertaron datos.")
         return
 
     # 4) Aplicar homologación aprobada y continuar proceso
