@@ -27,6 +27,7 @@ from typing import Any, Dict, List
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
+from psycopg2 import sql
 from openpyxl import load_workbook
 
 SPANISH_MONTHS = {
@@ -143,6 +144,35 @@ def load_config(config_path: Path) -> configparser.ConfigParser:
 
 def get_db_params(cfg: configparser.ConfigParser) -> Dict[str, str]:
     return dict(cfg["postgres"])
+
+
+def normalize_table_identifier(table_schema: str, table_name: str) -> str:
+    """Normaliza schema.tabla a formato sin puntos para key única."""
+    return f"{table_schema}.{table_name}"
+
+
+def execute_pre_import_action(conn_params: Dict[str, str], action_sql: str) -> bool:
+    """Ejecuta una acción previa (ej. TRUNCATE) antes de insertar.
+
+    Retorna True si se ejecutó sin error, False si no hay acción o falló.
+    """
+    if not action_sql or not action_sql.strip():
+        return True
+
+    sql = action_sql.strip()
+    # Normaliza SQL: quitar puntos de tabla para evitar error de syntax si la tabla tiene puntos en nombre
+    normalized_action = re.sub(r"[^AT-Z0-9\s;]+", "", sql).upper()
+
+    if not normalized_action.startswith(""):
+        try:
+            with psycopg2.connect(**conn_params) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+            print(f"[IMPORT_ACTION] Ejecutada previa: {sql}")
+            return True
+        except Exception as e:
+            print(f"[IMPORT_ACTION] Error ejecutando {sql}: {e}")
+            return False
 
 
 def pick_excel_file(input_dir: Path, file_name: str | None = None) -> Path:
@@ -1187,10 +1217,12 @@ def main() -> None:
 
         schema = cfg[target_section].get("schema")
         table = cfg[target_section].get("table")
+        table_identifier = normalize_table_identifier(schema, table)
         print(f"[SELECCION] Usando destino desde [{target_section}]: {schema}.{table}")
 
     input_dir = Path(cfg["input"].get("input_dir"))
     retry_input_dir_cfg = cfg["input"].get("retry_input_dir", fallback="./inputs_retry")
+
     retry_input_dir = (script_dir / retry_input_dir_cfg).resolve() if not Path(retry_input_dir_cfg).is_absolute() else Path(retry_input_dir_cfg)
     file_name = cfg["input"].get("file_name", fallback="").strip() or None
     sheet_name = cfg["input"].get("sheet_name", fallback="bbdd")
@@ -1236,8 +1268,27 @@ def main() -> None:
             "Crea la carpeta o corrige [input].retry_input_dir en config.ini."
         )
 
+    # Obtener acciones previa (opcional por tabla)
+    import_actions = {}
+    if "import_actions" in cfg:
+        import_actions = dict(cfg["import_actions"])
+    action_sql = import_actions.get(table_identifier)
+
     metadata = get_table_metadata(conn_params, schema, table)
     insert_cols = get_insertable_columns(metadata)
+
+    # Si hay acción previa para esta tabla, ejecutarla antes de insertar
+    if action_sql:
+        print(f"[IMPORT_ACTION] Tabla {schema}.{table} necesita acción previa")
+        success_pre_action = execute_pre_import_action(conn_params, action_sql)
+        if not success_pre_action:
+            raise RuntimeError(
+                f"[{schema}.{table}] No se pudo ejecutar la acción previa (ej. TRUNCATE). "
+                "Revisa permisos/tabla/SQL en config.ini."
+            )
+    elif is_retry_mode:
+        # En modo retry, no ejecutar acción previas (se asumiría que no es necesario)
+        print(f"[IMPORT_ACTION] Modo reintento: omitida acción previa para {schema}.{table}.")
 
     fixed_cols = list(cfg["fixed_values"].keys()) if "fixed_values" in cfg else []
     target_columns = [c for c in insert_cols if c not in fixed_cols]

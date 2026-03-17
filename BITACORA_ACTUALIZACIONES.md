@@ -18,6 +18,7 @@ El objetivo de las últimas iteraciones fue estabilizar flujo de carga inicial/r
 - Garantizar valores para columnas faltantes con `DEFAULT` de tabla cuando aplique.
 - Registrar errores por fila también en el Excel fuente (columna `errores`).
 - Añadir modo de operación más automatizable (non-interactive) y logging a archivo.
+- Ejecutar acciones previas por tabla (ej. `TRUNCATE`) antes de insertar masivo en modo inicial.
 
 ---
 
@@ -69,13 +70,6 @@ Se incorporó flujo explícito para columnas insertables que existen en tabla pe
 
 ---
 
-## Consideraciones operativas
-1. Si una carga parcial fue hecha con versión antigua, puede faltar correlación en `retry_index.json`; en ese caso la promoción automática a `_OK` puede requerir ajuste manual o crear entrada de índice.
-2. Con `processed_mode=move`, el archivo se mueve a `excels_done` sin cambiar necesariamente nombre; el control de estado puede depender del nombre heredado/manual y del índice.
-3. Se validó sintaxis Python tras cambios con `python3 -m py_compile cvg_massive_excels.py`.
-
----
-
 ## Cambios adicionales (modo PRO)
 
 ### 6) Logging a archivo
@@ -105,8 +99,58 @@ Se incorporó flujo explícito para columnas insertables que existen en tabla pe
   - parseo numérico (miles/decimales y literales `np.float64(...)`)
   - parseo booleano básico
 
+### 9) Acciones previas por tabla (ej. TRUNCATE)
+**Archivos:** `cvg_massive_excels.py`, `config.example.ini`
+- Se añadió sección `[import_actions]` en `config.example.ini`.
+- Permite definir acciones SQL previas por tabla destino (ej. `TRUNCATE CONCURRENTLY ...`).
+- Ejemplo para `converge_dopd_riesgos` en esquema defensa:
+  ```ini
+  [import_actions]
+  converge_dopd_riesgos = TRUNCATE CONCURRENTLY PROYECTO_DASHBOARD_DEFENSA.converge_dopd_riesgos;
+  ```
+- Funcionamiento:
+  - Si no define acción para la tabla, se asume "sin previa".
+  - Si define, se ejecuta antes de insertar (salvo en modo reintento).
+  - En caso de error (permisos/SQL inválido), levanta excepción clara.
+  - Acción se ejecuta a través de la conexión normal y se registra en log.
+
 ---
 
-## Próximos ajustes sugeridos (opcionales)
-- Ajustar `mark_excel_as_processed` en modo `move` para mantener sufijo de estado (`_PARTIAL_ERROR`/`_OK`) también en nombre del archivo movido.
-- Añadir changelog resumido en `README.md` para visibilidad rápida.
+## Consideraciones operativas
+1. Si una carga parcial fue hecha con versión antigua, puede faltar correlación en `retry_index.json`; en ese caso la promoción automática a `_OK` puede requerir ajuste manual o crear entrada de índice.
+2. Con `processed_mode=move`, el archivo se mueve a `excels_done` sin cambiar necesariamente nombre; el control de estado puede depender del nombre heredado/manual y del índice.
+3. Se validó sintaxis Python tras cambios con `python3 -m py_compile cvg_massive_excels.py`.
+4. Para tablas que requieren truncado, agregar la acción en `config.ini` (se copia desde `config.example.ini`)
+
+---
+
+## Comandos de uso para nuevas tablas
+
+### Carga inicial (ej. tabla DopD)
+```bash
+python3 cvg_massive_excels.py \
+  --non-interactive \
+  --target-section target_defensa \
+  --yes-missing-columns \
+  --log-file run_dopd.log
+```
+
+### Reintento (si hubo inválidos)
+```bash
+python3 cvg_massive_excels.py \
+  --non-interactive \
+  --target-section target_defensa \
+  --load-mode retry \
+  --yes-missing-columns \
+  --log-file run_dopd_retry.log
+```
+
+### Solo homologación (no insertar)
+```bash
+python3 cvg_massive_excels.py \
+  --only-mapping \
+  --target-section target_defensa \
+  --load-mode initial \
+  --yes-missing-columns
+```
+
